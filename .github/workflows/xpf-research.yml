@@ -64,7 +64,7 @@ jobs:
         shell: bash
         run: brew install ipsw
 
-      - name: Download and decompress Apple kernelcache only
+      - name: Download Apple kernelcache and SPTM/TXM firmware
         if: ${{ inputs.analyze_kernel }}
         shell: bash
         run: |
@@ -97,6 +97,22 @@ jobs:
           file "$KERNEL"
           echo "KERNEL_PATH=$KERNEL" >> "$GITHUB_ENV"
 
+          # Retrieve the matching, publicly distributed SPTM and TXM firmware.
+          # XPF expects these original IMG4-format files as optional arguments.
+          ipsw download ipsw --device iPhone14,3 --build 22G100 --pattern 'sptm\.t8110\.release|txm\.iphoneos\.release' --confirm 2>&1 | tee ../logs/ipsw-sptm-txm.log
+          SPTM="$(find "$PWD" -type f -name 'sptm.t8110.release' -print -quit)"
+          TXM="$(find "$PWD" -type f -name 'txm.iphoneos.release' -print -quit)"
+          if [ -z "$SPTM" ] || [ -z "$TXM" ]; then
+            echo "SPTM or TXM file missing after remote extraction."
+            find . -type f -print
+            exit 1
+          fi
+          echo "SPTM selected: $SPTM"
+          echo "TXM selected: $TXM"
+          file "$SPTM" "$TXM"
+          echo "SPTM_PATH=$SPTM" >> "$GITHUB_ENV"
+          echo "TXM_PATH=$TXM" >> "$GITHUB_ENV"
+
       - name: Test XPF analysis sets independently
         if: ${{ inputs.analyze_kernel }}
         shell: bash
@@ -114,7 +130,7 @@ jobs:
           for set in translation trustcache physmap struct physrw IOSurface sandbox perfkrw devmode badRecovery arm64kcall trigon; do
             echo "=== SET: $set ==="
             exitcode=0
-            XPF_RESEARCH_SET="$set" XPF/output/macos/xpf_test "$KERNEL_PATH" > "logs/xpf-$set.log" 2>&1 || exitcode=$?
+            XPF_RESEARCH_SET="$set" XPF/output/macos/xpf_test "$KERNEL_PATH" "$SPTM_PATH" "$TXM_PATH" > "logs/xpf-$set.log" 2>&1 || exitcode=$?
             cat "logs/xpf-$set.log"
             if [ "$exitcode" -eq 0 ] && ! grep -qE 'Failed to start XPF|XPF Error:' "logs/xpf-$set.log"; then
               result="PASS"
