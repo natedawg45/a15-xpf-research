@@ -100,8 +100,8 @@ jobs:
           # Retrieve the matching, publicly distributed SPTM and TXM firmware.
           # XPF expects these original IMG4-format files as optional arguments.
           ipsw download ipsw --device iPhone14,3 --build 22G100 --pattern 'sptm\.t8110\.release|txm\.iphoneos\.release' --confirm 2>&1 | tee ../logs/ipsw-sptm-txm.log
-          SPTM="$(find "$PWD" -type f -name 'sptm.t8110.release' -print -quit)"
-          TXM="$(find "$PWD" -type f -name 'txm.iphoneos.release' -print -quit)"
+          SPTM="$(find "$PWD" -type f -name 'sptm.t8110.release.im4p' -print -quit)"
+          TXM="$(find "$PWD" -type f -name 'txm.iphoneos.release.im4p' -print -quit)"
           if [ -z "$SPTM" ] || [ -z "$TXM" ]; then
             echo "SPTM or TXM file missing after remote extraction."
             find . -type f -print
