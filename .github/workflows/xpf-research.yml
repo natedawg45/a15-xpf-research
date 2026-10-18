@@ -1,0 +1,93 @@
+name: XPF - A15 iOS 18.6.2 research
+
+on:
+  workflow_dispatch:
+    inputs:
+      analyze_kernel:
+        description: "Download iPhone14,3 build 22G100 kernelcache and run XPF (disable to test compilation only)"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Build XPF and inspect iPhone14,3 kernelcache
+    runs-on: macos-15
+    timeout-minutes: 50
+
+    steps:
+      - name: Checkout research repository
+        uses: actions/checkout@v4
+
+      - name: Clone upstream XPF with dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p logs
+          git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/opa334/XPF.git XPF
+          git -C XPF rev-parse HEAD | tee logs/xpf-commit.txt
+          git -C XPF submodule status | tee logs/submodules.txt
+
+      - name: Compile original XPF macOS command-line tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcode-select -p
+          (cd XPF && make output/macos/libxpf.dylib output/macos/xpf_test) 2>&1 | tee logs/xpf-build.log
+          file XPF/output/macos/xpf_test XPF/output/macos/libxpf.dylib
+          test -x XPF/output/macos/xpf_test
+
+      - name: Install IPSW for remote kernelcache extraction
+        if: ${{ inputs.analyze_kernel }}
+        shell: bash
+        run: brew install ipsw
+
+      - name: Download and decompress Apple kernelcache only
+        if: ${{ inputs.analyze_kernel }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p kerneldata
+          cd kerneldata
+          ipsw download ipsw --device iPhone14,3 --build 22G100 --kernel --confirm 2>&1 | tee ../logs/ipsw-download.log
+          echo "Downloaded candidate files:"
+          find . -maxdepth 6 -type f -print | head -80
+          RAW="$(find . -type f \( -name 'kernelcache.release.*' -o -name 'kernelcache' \) ! -name '*.decompressed' -print -quit)"
+          if [ -z "$RAW" ]; then
+            echo "No kernelcache file found after remote extraction."
+            exit 1
+          fi
+          echo "Selected input: $RAW"
+          file "$RAW"
+          ipsw kernel dec "$RAW" -o "$PWD/unpacked" 2>&1 | tee ../logs/ipsw-decompress.log
+          KERNEL="$(find "$PWD/unpacked" -type f -name '*.decompressed' -print -quit)"
+          if [ -z "$KERNEL" ]; then
+            echo "Could not find decompressed Mach-O kernelcache."
+            exit 1
+          fi
+          file "$KERNEL"
+          echo "KERNEL_PATH=$KERNEL" >> "$GITHUB_ENV"
+
+      - name: Run upstream XPF against decompressed kernelcache
+        if: ${{ inputs.analyze_kernel }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Analyzing Apple iPhone14,3 iOS 18.6.2 (22G100)."
+          XPF/output/macos/xpf_test "$KERNEL_PATH" 2>&1 | tee logs/xpf-analysis.log
+          if grep -qE 'Failed to start XPF|XPF Error:' logs/xpf-analysis.log; then
+            echo "XPF reported an analysis error. See the log."
+            exit 1
+          fi
+
+      - name: Upload logs (no firmware binaries)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: xpf-research-logs
+          path: logs/
+          if-no-files-found: warn
+          retention-days: 14
