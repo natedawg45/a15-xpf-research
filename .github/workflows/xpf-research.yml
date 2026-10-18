@@ -62,11 +62,18 @@ jobs:
           fi
           echo "Selected input: $RAW"
           file "$RAW"
-          ipsw kernel dec "$RAW" -o "$PWD/unpacked" 2>&1 | tee ../logs/ipsw-decompress.log
-          KERNEL="$(find "$PWD/unpacked" -type f -name '*.decompressed' -print -quit)"
-          if [ -z "$KERNEL" ]; then
-            echo "Could not find decompressed Mach-O kernelcache."
-            exit 1
+          # The remote IPSW extractor may already provide a decoded Mach-O kernelcache.
+          # Decompress only when we receive an IM4P container.
+          if file "$RAW" | grep -q 'Mach-O'; then
+            KERNEL="$(cd "$(dirname "$RAW")" && pwd)/$(basename "$RAW")"
+            echo "IPSW provided an already-decoded Mach-O; skipping decompression."
+          else
+            ipsw kernel dec "$RAW" -o "$PWD/unpacked" 2>&1 | tee ../logs/ipsw-decompress.log
+            KERNEL="$(find "$PWD/unpacked" -type f -name '*.decompressed' -print -quit)"
+            if [ -z "$KERNEL" ]; then
+              echo "Could not find decompressed Mach-O kernelcache."
+              exit 1
+            fi
           fi
           file "$KERNEL"
           echo "KERNEL_PATH=$KERNEL" >> "$GITHUB_ENV"
