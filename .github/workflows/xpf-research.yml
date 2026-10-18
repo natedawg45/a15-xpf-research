@@ -36,6 +36,25 @@ jobs:
         run: |
           set -euo pipefail
           xcode-select -p
+          # Adapt only the test CLI: preserve the upstream patchfinder library unchanged.
+          # Running sets independently prevents one unsupported finder from aborting the scan.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("XPF/src/cli/main.c")
+          src = p.read_text()
+          src = src.replace("#include <time.h>", "#include <time.h>\n#include <stdlib.h>", 1)
+          first = src.index("char *sets[] = {")
+          last = src.index("xpc_object_t serializedSystemInfo", first)
+          replacement = (
+              'const char *requestedSet = getenv("XPF_RESEARCH_SET");\n'
+              '\t\t\t\tif (!requestedSet || !*requestedSet) requestedSet = "struct";\n'
+              '\t\t\t\tchar *sets[] = {(char *)requestedSet, NULL};\n'
+              '\t\t\t\tprintf("Requested analysis set: %s\\n", requestedSet);\n'
+              '\t\t\t\t'
+          )
+          p.write_text(src[:first] + replacement + src[last:])
+          print("CLI adapted for individual analysis sets.")
+          PY
           (cd XPF && make output/macos/libxpf.dylib output/macos/xpf_test) 2>&1 | tee logs/xpf-build.log
           file XPF/output/macos/xpf_test XPF/output/macos/libxpf.dylib
           test -x XPF/output/macos/xpf_test
@@ -78,15 +97,38 @@ jobs:
           file "$KERNEL"
           echo "KERNEL_PATH=$KERNEL" >> "$GITHUB_ENV"
 
-      - name: Run upstream XPF against decompressed kernelcache
+      - name: Test XPF analysis sets independently
         if: ${{ inputs.analyze_kernel }}
         shell: bash
         run: |
           set -euo pipefail
           echo "Analyzing Apple iPhone14,3 iOS 18.6.2 (22G100)."
-          XPF/output/macos/xpf_test "$KERNEL_PATH" 2>&1 | tee logs/xpf-analysis.log
-          if grep -qE 'Failed to start XPF|XPF Error:' logs/xpf-analysis.log; then
-            echo "XPF reported an analysis error. See the log."
+          echo "Each category runs independently; errors are preserved in its own log."
+          {
+            echo "### XPF analysis: iPhone14,3 / iOS 18.6.2 (22G100)"
+            echo ""
+            echo "| Analysis set | Result | Values reported |"
+            echo "| --- | --- | ---: |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          success=0
+          for set in translation trustcache physmap struct physrw IOSurface sandbox perfkrw devmode badRecovery arm64kcall trigon; do
+            echo "=== SET: $set ==="
+            exitcode=0
+            XPF_RESEARCH_SET="$set" XPF/output/macos/xpf_test "$KERNEL_PATH" > "logs/xpf-$set.log" 2>&1 || exitcode=$?
+            cat "logs/xpf-$set.log"
+            if [ "$exitcode" -eq 0 ] && ! grep -qE 'Failed to start XPF|XPF Error:' "logs/xpf-$set.log"; then
+              result="PASS"
+              success=$((success + 1))
+            else
+              result="FAIL (see log)"
+            fi
+            count=$(grep -c '<-' "logs/xpf-$set.log" || true)
+            echo "| $set | $result | $count |" >> "$GITHUB_STEP_SUMMARY"
+            printf "%s %s values=%s\n" "$set" "$result" "$count" >> logs/set-results.txt
+          done
+          echo "Successful analysis sets: $success"
+          if [ "$success" -eq 0 ]; then
+            echo "No set completed successfully; inspect logs/xpf-*.log."
             exit 1
           fi
 
